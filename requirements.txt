@@ -1,0 +1,8 @@
+streamlit>=1.35.0
+streamlit-aggrid>=1.2.1
+streamlit-flow-component>=1.0.0
+supabase>=2.4.0
+st-supabase-connection>=1.0.0
+pandas>=2.0.0
+openpyxl>=3.1.0
+xlrd>=2.0.1
