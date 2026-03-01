@@ -12,8 +12,11 @@ from pathlib import Path
 from typing import Any
 
 # ── Path DB ───────────────────────────────────────────────────────────────────
-# Prova prima nella cartella data/ locale (bundled), poi il path Electron
-_LOCAL_DB = Path(__file__).parent.parent / "data" / "orgplus.db"
+# Cerca il DB in ordine:
+#   1. data/orgplus.db nella root del progetto (bundled nel repo — usato su Cloud)
+#   2. Path Electron su macOS locale
+_PROJECT_ROOT = Path(__file__).parent.parent
+_LOCAL_DB = _PROJECT_ROOT / "data" / "orgplus.db"
 _ELECTRON_DB = Path.home() / "Library/Application Support/tns-orgplus/orgplus.db"
 
 def _db_path() -> Path:
@@ -24,7 +27,7 @@ def _db_path() -> Path:
     raise FileNotFoundError(
         f"Database non trovato.\n"
         f"Atteso in:\n  {_LOCAL_DB}\n  {_ELECTRON_DB}\n"
-        f"Copia orgplus.db in masterdata/data/orgplus.db"
+        f"Copia orgplus.db in data/orgplus.db"
     )
 
 
