@@ -97,7 +97,7 @@ def render() -> None:
         key="orgchart_flow",
         nodes=nodes,
         edges=edges,
-        layout=TreeLayout(direction="DOWN"),
+        layout=TreeLayout(direction="down"),
         fit_view=True,
         height=600,
         show_minimap=True,
