@@ -1,7 +1,7 @@
 """
 Organigramma View — streamlit-flow con tree layout.
 Mostra la gerarchia strutture con pan/zoom.
-Usa streamlit-flow-component==1.2.9 (API con StreamlitFlowState).
+Usa streamlit-flow-component==1.2.9 (API: init_nodes / init_edges).
 """
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import streamlit as st
 from streamlit_flow import streamlit_flow
 from streamlit_flow.elements import StreamlitFlowNode, StreamlitFlowEdge
 from streamlit_flow.layouts import TreeLayout
-from streamlit_flow.state import StreamlitFlowState
 
 import db.connection as db
 
@@ -98,10 +97,10 @@ def render() -> None:
     # Cache key che cambia quando cambiano filtri → forza reinizializzazione del grafo
     flow_key = f"orgchart_flow_{sede_filter}_{color_by}_{show_dip}"
 
-    state = StreamlitFlowState(nodes=nodes, edges=edges)
     streamlit_flow(
         key=flow_key,
-        state=state,
+        init_nodes=nodes,
+        init_edges=edges,
         layout=TreeLayout(direction="down"),
         fit_view=True,
         height=600,
