@@ -1,205 +1,258 @@
 """
-Supabase connection helpers for TNS OrgPlus Manager.
-All DB access goes through this module.
+SQLite connection helpers for TNS OrgPlus Manager.
+Punta direttamente a orgplus.db (stesso DB usato dall'app Electron).
+All DB access goes through this module — same API as the Supabase version.
 """
 from __future__ import annotations
 
+import sqlite3
 import streamlit as st
-from supabase import create_client, Client
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
-# ── Connection ────────────────────────────────────────────────────────────────
+# ── Path DB ───────────────────────────────────────────────────────────────────
+# Prova prima nella cartella data/ locale (bundled), poi il path Electron
+_LOCAL_DB = Path(__file__).parent.parent / "data" / "orgplus.db"
+_ELECTRON_DB = Path.home() / "Library/Application Support/tns-orgplus/orgplus.db"
+
+def _db_path() -> Path:
+    if _LOCAL_DB.exists():
+        return _LOCAL_DB
+    if _ELECTRON_DB.exists():
+        return _ELECTRON_DB
+    raise FileNotFoundError(
+        f"Database non trovato.\n"
+        f"Atteso in:\n  {_LOCAL_DB}\n  {_ELECTRON_DB}\n"
+        f"Copia orgplus.db in masterdata/data/orgplus.db"
+    )
+
+
+# ── Connection pool (thread-safe per Streamlit) ───────────────────────────────
 
 @st.cache_resource
-def get_client() -> Client:
-    """Return a cached Supabase client (one instance per app session)."""
-    url = st.secrets["connections"]["supabase"]["url"]
-    key = st.secrets["connections"]["supabase"]["key"]
-    return create_client(url, key)
+def _get_conn_path() -> str:
+    """Risolve e cacha il path del DB una volta sola."""
+    p = _db_path()
+    return str(p)
+
+
+def _conn() -> sqlite3.Connection:
+    """Apre una connessione SQLite con row_factory. Non cachata (thread-safe)."""
+    conn = sqlite3.connect(_get_conn_path(), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
+def _rows(cursor: sqlite3.Cursor) -> list[dict]:
+    return [dict(r) for r in cursor.fetchall()]
 
 
 # ── Query helpers ─────────────────────────────────────────────────────────────
 
 def fetch_strutture(include_deleted: bool = False) -> list[dict]:
-    client = get_client()
-    q = client.table("strutture").select("*").order("codice")
-    if not include_deleted:
-        q = q.is_("deleted_at", "null")
-    return q.execute().data
+    with _conn() as conn:
+        if include_deleted:
+            return _rows(conn.execute("SELECT * FROM strutture ORDER BY codice"))
+        return _rows(conn.execute("SELECT * FROM strutture WHERE deleted_at IS NULL ORDER BY codice"))
 
 
 def fetch_dipendenti(include_deleted: bool = False) -> list[dict]:
-    client = get_client()
-    q = client.table("dipendenti").select("*").order("titolare")
-    if not include_deleted:
-        q = q.is_("deleted_at", "null")
-    return q.execute().data
+    with _conn() as conn:
+        if include_deleted:
+            return _rows(conn.execute("SELECT * FROM dipendenti ORDER BY titolare"))
+        return _rows(conn.execute("SELECT * FROM dipendenti WHERE deleted_at IS NULL ORDER BY titolare"))
 
 
 def fetch_change_log(limit: int = 500) -> list[dict]:
-    client = get_client()
-    return (
-        client.table("change_log")
-        .select("*")
-        .order("timestamp", desc=True)
-        .limit(limit)
-        .execute()
-        .data
-    )
+    with _conn() as conn:
+        return _rows(conn.execute(
+            "SELECT * FROM change_log ORDER BY timestamp DESC LIMIT ?", (limit,)
+        ))
 
 
 # ── CRUD helpers ──────────────────────────────────────────────────────────────
 
 def update_struttura(codice: str, fields: dict[str, Any]) -> dict:
-    """Update one or more fields on a struttura. Returns updated row."""
-    client = get_client()
-    old = client.table("strutture").select("*").eq("codice", codice).single().execute().data
-    result = client.table("strutture").update(fields).eq("codice", codice).execute()
-    # Log each changed field
-    for field, new_val in fields.items():
-        old_val = old.get(field)
-        if str(old_val) != str(new_val):
-            _log_change("struttura", codice, old.get("descrizione") or codice,
-                        "update", field, str(old_val), str(new_val))
-    return result.data[0] if result.data else {}
+    with _conn() as conn:
+        old = dict(conn.execute("SELECT * FROM strutture WHERE codice=?", (codice,)).fetchone() or {})
+        set_clause = ", ".join(f"{k}=?" for k in fields)
+        conn.execute(
+            f"UPDATE strutture SET {set_clause}, updated_at=? WHERE codice=?",
+            [*fields.values(), _now(), codice]
+        )
+        conn.commit()
+        for field, new_val in fields.items():
+            old_val = old.get(field)
+            if str(old_val) != str(new_val):
+                _log_change(conn, "struttura", codice, old.get("descrizione") or codice,
+                            "update", field, str(old_val), str(new_val))
+        conn.commit()
+    return {**old, **fields}
 
 
 def update_dipendente(cf: str, fields: dict[str, Any]) -> dict:
-    """Update one or more fields on a dipendente. Returns updated row."""
-    client = get_client()
-    old = client.table("dipendenti").select("*").eq("codice_fiscale", cf).single().execute().data
-    result = client.table("dipendenti").update(fields).eq("codice_fiscale", cf).execute()
-    label = old.get("titolare") or cf
-    for field, new_val in fields.items():
-        old_val = old.get(field)
-        if str(old_val) != str(new_val):
-            _log_change("dipendente", cf, label, "update", field, str(old_val), str(new_val))
-    return result.data[0] if result.data else {}
+    with _conn() as conn:
+        old = dict(conn.execute("SELECT * FROM dipendenti WHERE codice_fiscale=?", (cf,)).fetchone() or {})
+        set_clause = ", ".join(f"{k}=?" for k in fields)
+        conn.execute(
+            f"UPDATE dipendenti SET {set_clause}, updated_at=? WHERE codice_fiscale=?",
+            [*fields.values(), _now(), cf]
+        )
+        label = old.get("titolare") or cf
+        for field, new_val in fields.items():
+            old_val = old.get(field)
+            if str(old_val) != str(new_val):
+                _log_change(conn, "dipendente", cf, label, "update", field, str(old_val), str(new_val))
+        conn.commit()
+    return {**old, **fields}
 
 
 def create_struttura(data: dict[str, Any]) -> dict:
-    client = get_client()
-    result = client.table("strutture").insert(data).execute()
-    if result.data:
-        row = result.data[0]
-        _log_change("struttura", row["codice"], row.get("descrizione") or row["codice"],
+    cols = list(data.keys())
+    with _conn() as conn:
+        conn.execute(
+            f"INSERT INTO strutture ({','.join(cols)}) VALUES ({','.join('?'*len(cols))})",
+            list(data.values())
+        )
+        _log_change(conn, "struttura", data["codice"], data.get("descrizione") or data["codice"],
                     "create", None, None, None)
-    return result.data[0] if result.data else {}
+        conn.commit()
+    return data
 
 
 def create_dipendente(data: dict[str, Any]) -> dict:
-    client = get_client()
-    result = client.table("dipendenti").insert(data).execute()
-    if result.data:
-        row = result.data[0]
-        _log_change("dipendente", row["codice_fiscale"], row.get("titolare") or row["codice_fiscale"],
+    cols = list(data.keys())
+    with _conn() as conn:
+        conn.execute(
+            f"INSERT INTO dipendenti ({','.join(cols)}) VALUES ({','.join('?'*len(cols))})",
+            list(data.values())
+        )
+        _log_change(conn, "dipendente", data["codice_fiscale"],
+                    data.get("titolare") or data["codice_fiscale"],
                     "create", None, None, None)
-    return result.data[0] if result.data else {}
+        conn.commit()
+    return data
 
 
 def soft_delete_struttura(codice: str) -> None:
-    client = get_client()
-    row = client.table("strutture").select("descrizione").eq("codice", codice).single().execute().data
-    client.table("strutture").update({"deleted_at": _now()}).eq("codice", codice).execute()
-    _log_change("struttura", codice, row.get("descrizione") or codice, "delete", None, None, None)
+    with _conn() as conn:
+        row = conn.execute("SELECT descrizione FROM strutture WHERE codice=?", (codice,)).fetchone()
+        conn.execute("UPDATE strutture SET deleted_at=? WHERE codice=?", (_now(), codice))
+        _log_change(conn, "struttura", codice, (row["descrizione"] if row else codice),
+                    "delete", None, None, None)
+        conn.commit()
 
 
 def soft_delete_dipendente(cf: str) -> None:
-    client = get_client()
-    row = client.table("dipendenti").select("titolare").eq("codice_fiscale", cf).single().execute().data
-    client.table("dipendenti").update({"deleted_at": _now()}).eq("codice_fiscale", cf).execute()
-    _log_change("dipendente", cf, row.get("titolare") or cf, "delete", None, None, None)
+    with _conn() as conn:
+        row = conn.execute("SELECT titolare FROM dipendenti WHERE codice_fiscale=?", (cf,)).fetchone()
+        conn.execute("UPDATE dipendenti SET deleted_at=? WHERE codice_fiscale=?", (_now(), cf))
+        _log_change(conn, "dipendente", cf, (row["titolare"] if row else cf),
+                    "delete", None, None, None)
+        conn.commit()
 
 
 def restore_struttura(codice: str) -> None:
-    client = get_client()
-    client.table("strutture").update({"deleted_at": None}).eq("codice", codice).execute()
-    _log_change("struttura", codice, codice, "restore", None, None, None)
+    with _conn() as conn:
+        conn.execute("UPDATE strutture SET deleted_at=NULL WHERE codice=?", (codice,))
+        _log_change(conn, "struttura", codice, codice, "restore", None, None, None)
+        conn.commit()
 
 
 def restore_dipendente(cf: str) -> None:
-    client = get_client()
-    client.table("dipendenti").update({"deleted_at": None}).eq("codice_fiscale", cf).execute()
-    _log_change("dipendente", cf, cf, "restore", None, None, None)
+    with _conn() as conn:
+        conn.execute("UPDATE dipendenti SET deleted_at=NULL WHERE codice_fiscale=?", (cf,))
+        _log_change(conn, "dipendente", cf, cf, "restore", None, None, None)
+        conn.commit()
 
 
 def update_struttura_parent(codice: str, new_parent: str | None) -> dict:
-    """Move a struttura to a new parent (or root if new_parent is None)."""
-    client = get_client()
-    old_row = client.table("strutture").select("codice_padre,descrizione").eq("codice", codice).single().execute().data
-    result = client.table("strutture").update({"codice_padre": new_parent}).eq("codice", codice).execute()
-    _log_change("struttura", codice, old_row.get("descrizione") or codice,
-                "update", "codice_padre", old_row.get("codice_padre"), new_parent)
-    return result.data[0] if result.data else {}
+    with _conn() as conn:
+        old = dict(conn.execute("SELECT codice_padre, descrizione FROM strutture WHERE codice=?", (codice,)).fetchone() or {})
+        conn.execute("UPDATE strutture SET codice_padre=?, updated_at=? WHERE codice=?",
+                     (new_parent, _now(), codice))
+        _log_change(conn, "struttura", codice, old.get("descrizione") or codice,
+                    "update", "codice_padre", old.get("codice_padre"), new_parent)
+        conn.commit()
+    return {**old, "codice_padre": new_parent}
 
 
 def move_dipendente(cf: str, new_struttura: str) -> dict:
-    """Move a dipendente to a different struttura."""
-    client = get_client()
-    old_row = client.table("dipendenti").select("codice_struttura,titolare").eq("codice_fiscale", cf).single().execute().data
-    result = client.table("dipendenti").update({"codice_struttura": new_struttura}).eq("codice_fiscale", cf).execute()
-    _log_change("dipendente", cf, old_row.get("titolare") or cf,
-                "update", "codice_struttura", old_row.get("codice_struttura"), new_struttura)
-    return result.data[0] if result.data else {}
+    with _conn() as conn:
+        old = dict(conn.execute("SELECT codice_struttura, titolare FROM dipendenti WHERE codice_fiscale=?", (cf,)).fetchone() or {})
+        conn.execute("UPDATE dipendenti SET codice_struttura=?, updated_at=? WHERE codice_fiscale=?",
+                     (new_struttura, _now(), cf))
+        _log_change(conn, "dipendente", cf, old.get("titolare") or cf,
+                    "update", "codice_struttura", old.get("codice_struttura"), new_struttura)
+        conn.commit()
+    return {**old, "codice_struttura": new_struttura}
 
 
-# ── Batch upsert (used by import + seed) ─────────────────────────────────────
+# ── Batch upsert (import XLS) ─────────────────────────────────────────────────
 
 def upsert_strutture(rows: list[dict]) -> int:
-    """Upsert a list of strutture rows. Returns count inserted/updated."""
-    client = get_client()
     if not rows:
         return 0
-    result = client.table("strutture").upsert(rows, on_conflict="codice").execute()
-    return len(result.data)
+    cols = list(rows[0].keys())
+    placeholders = ",".join("?" * len(cols))
+    sql = (f"INSERT INTO strutture ({','.join(cols)}) VALUES ({placeholders}) "
+           f"ON CONFLICT(codice) DO UPDATE SET "
+           + ", ".join(f"{c}=excluded.{c}" for c in cols if c != "codice"))
+    with _conn() as conn:
+        conn.executemany(sql, [list(r.values()) for r in rows])
+        conn.commit()
+    return len(rows)
 
 
 def upsert_dipendenti(rows: list[dict]) -> int:
-    """Upsert a list of dipendenti rows. Returns count inserted/updated."""
-    client = get_client()
     if not rows:
         return 0
-    result = client.table("dipendenti").upsert(rows, on_conflict="codice_fiscale").execute()
-    return len(result.data)
+    cols = list(rows[0].keys())
+    placeholders = ",".join("?" * len(cols))
+    sql = (f"INSERT INTO dipendenti ({','.join(cols)}) VALUES ({placeholders}) "
+           f"ON CONFLICT(codice_fiscale) DO UPDATE SET "
+           + ", ".join(f"{c}=excluded.{c}" for c in cols if c != "codice_fiscale"))
+    with _conn() as conn:
+        conn.executemany(sql, [list(r.values()) for r in rows])
+        conn.commit()
+    return len(rows)
 
 
 # ── Derived queries ───────────────────────────────────────────────────────────
 
 def fetch_orphan_dipendenti() -> list[dict]:
-    """Dipendenti whose codice_struttura doesn't exist in strutture."""
-    client = get_client()
-    # All active strutture codici
-    strutture_codici = {
-        r["codice"]
-        for r in client.table("strutture").select("codice").is_("deleted_at", "null").execute().data
-    }
-    all_dip = fetch_dipendenti(include_deleted=False)
-    return [
-        d for d in all_dip
-        if not d.get("codice_struttura") or d["codice_struttura"] not in strutture_codici
-    ]
+    with _conn() as conn:
+        return _rows(conn.execute("""
+            SELECT d.* FROM dipendenti d
+            WHERE d.deleted_at IS NULL
+              AND (d.codice_struttura IS NULL
+                   OR d.codice_struttura = ''
+                   OR d.codice_struttura NOT IN (
+                       SELECT codice FROM strutture WHERE deleted_at IS NULL
+                   ))
+            ORDER BY d.titolare
+        """))
 
 
 def fetch_orphan_strutture() -> list[dict]:
-    """Strutture whose codice_padre doesn't exist in strutture."""
-    client = get_client()
-    strutture_codici = {
-        r["codice"]
-        for r in client.table("strutture").select("codice").is_("deleted_at", "null").execute().data
-    }
-    all_str = fetch_strutture(include_deleted=False)
-    return [
-        s for s in all_str
-        if s.get("codice_padre") and s["codice_padre"] not in strutture_codici
-    ]
+    with _conn() as conn:
+        return _rows(conn.execute("""
+            SELECT s.* FROM strutture s
+            WHERE s.deleted_at IS NULL
+              AND s.codice_padre IS NOT NULL
+              AND s.codice_padre != ''
+              AND s.codice_padre NOT IN (
+                  SELECT codice FROM strutture WHERE deleted_at IS NULL
+              )
+            ORDER BY s.codice
+        """))
 
 
 def fetch_empty_strutture() -> list[dict]:
-    """
-    Strutture with no dipendenti anywhere in their subtree.
-    Uses a recursive Python approach (PostgreSQL CTE alternative if needed).
-    """
+    """Strutture con nessun dipendente in tutto il sottoalbero (ricorsivo in Python)."""
     strutture = fetch_strutture(include_deleted=False)
     dipendenti = fetch_dipendenti(include_deleted=False)
 
@@ -232,18 +285,15 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _log_change(entity_type: str, entity_id: str, entity_label: str,
-                action: str, field_name: str | None,
-                old_value: str | None, new_value: str | None) -> None:
+def _log_change(conn: sqlite3.Connection, entity_type: str, entity_id: str,
+                entity_label: str, action: str,
+                field_name: str | None, old_value: str | None, new_value: str | None) -> None:
     try:
-        get_client().table("change_log").insert({
-            "entity_type":  entity_type,
-            "entity_id":    entity_id,
-            "entity_label": entity_label,
-            "action":       action,
-            "field_name":   field_name,
-            "old_value":    old_value,
-            "new_value":    new_value,
-        }).execute()
+        conn.execute("""
+            INSERT INTO change_log (timestamp, entity_type, entity_id, entity_label,
+                                    action, field_name, old_value, new_value)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (_now(), entity_type, entity_id, entity_label,
+              action, field_name, old_value, new_value))
     except Exception:
-        pass  # Non-critical — don't crash the app on log failure
+        pass  # Non-critical
