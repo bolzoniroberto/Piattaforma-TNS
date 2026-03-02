@@ -14,6 +14,7 @@ interface RecordDrawerProps {
   type: 'struttura' | 'dipendente'
   record?: (Struttura & { dipendenti_count?: number }) | Dipendente | null
   initialMode?: Mode
+  variant?: 'overlay' | 'panel'
   onClose: () => void
   onSaved?: () => void
 }
@@ -94,6 +95,7 @@ export default function RecordDrawer({
   type,
   record,
   initialMode = 'view',
+  variant = 'overlay',
   onClose,
   onSaved
 }: RecordDrawerProps) {
@@ -231,6 +233,196 @@ export default function RecordDrawer({
 
   const fieldAuto = (key: string, placeholder?: string) =>
     FIELD_OPTIONS[key] ? fieldCombo(key) : fieldInput(key, placeholder)
+
+  if (variant === 'panel') {
+    return (
+      <>
+        <div className="h-full w-full flex flex-col">
+          <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-100">
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+              <X className="w-4 h-4" />
+            </button>
+            <h2 className="font-semibold text-gray-900 text-sm flex-1 truncate">{title}</h2>
+            {mode === 'view' && record && (
+              <button onClick={() => setMode('edit')} className="text-sm text-indigo-600 hover:text-indigo-800 font-medium">
+                Modifica
+              </button>
+            )}
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-5 py-4 space-y-6">
+            <div>
+              <p className={SECTION_LABEL}>Dati Identificativi</p>
+              {mode !== 'view' ? (
+                <div className="space-y-2">
+                  {type === 'struttura' ? (
+                    <>
+                      <div><label className="text-xs text-gray-500 mb-1 block">Codice *</label>{fieldInput('codice', 'es. G01')}</div>
+                      <div><label className="text-xs text-gray-500 mb-1 block">Descrizione *</label>{fieldInput('descrizione', 'Nome struttura')}</div>
+                      <div><label className="text-xs text-gray-500 mb-1 block">Struttura padre</label>{fieldInput('codice_padre', 'es. A')}</div>
+                      <div><label className="text-xs text-gray-500 mb-1 block">CdC Costo</label>{fieldInput('cdc_costo')}</div>
+                      <div><label className="text-xs text-gray-500 mb-1 block">Titolare</label>{fieldInput('titolare', 'COGNOME NOME')}</div>
+                    </>
+                  ) : (
+                    <>
+                      <div><label className="text-xs text-gray-500 mb-1 block">Codice Fiscale *</label>{fieldInput('codice_fiscale')}</div>
+                      <div><label className="text-xs text-gray-500 mb-1 block">Titolare</label>{fieldInput('titolare', 'COGNOME NOME')}</div>
+                      <div><label className="text-xs text-gray-500 mb-1 block">Struttura</label>{fieldInput('codice_struttura', 'Codice struttura')}</div>
+                      <div><label className="text-xs text-gray-500 mb-1 block">CdC Costo</label>{fieldInput('cdc_costo')}</div>
+                      <div><label className="text-xs text-gray-500 mb-1 block">Unità Organizzativa</label>{fieldInput('unita_organizzativa')}</div>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <div>
+                  {type === 'struttura' ? (
+                    <>
+                      <FieldRow label="Codice" value={r?.codice as string} />
+                      <FieldRow label="CdC Costo" value={r?.cdc_costo as string} />
+                      <FieldRow label="Struttura padre" value={r?.codice_padre as string} />
+                      <FieldRow label="Titolare" value={r?.titolare as string} />
+                      {r?.unita_organizzativa && <FieldRow label="Unità Org." value={r.unita_organizzativa as string} />}
+                    </>
+                  ) : (
+                    <>
+                      <FieldRow label="Codice Fiscale" value={r?.codice_fiscale as string} />
+                      <FieldRow label="Struttura" value={r?.codice_struttura as string} />
+                      <FieldRow label="CdC Costo" value={r?.cdc_costo as string} />
+                      <FieldRow label="Unità Org." value={r?.unita_organizzativa as string} />
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <p className={SECTION_LABEL}>Ruoli Principali</p>
+              {mode !== 'view' ? (
+                <div className="space-y-2">
+                  {ROLE_FIELDS.map(({ key, label }) => (
+                    <div key={key}><label className="text-xs text-gray-500 mb-1 block">{label}</label>{fieldAuto(key)}</div>
+                  ))}
+                </div>
+              ) : (
+                <div>{ROLE_FIELDS.map(({ key, label }) => <RoleRow key={key} label={label} value={r?.[key] as string} />)}</div>
+              )}
+            </div>
+
+            <div>
+              <p className={SECTION_LABEL}>Ruoli Assistenti</p>
+              {mode !== 'view' ? (
+                <div className="space-y-2">
+                  {ASSISTENTI_FIELDS.map(({ key, label }) => (
+                    <div key={key}><label className="text-xs text-gray-500 mb-1 block">{label}</label>{fieldAuto(key)}</div>
+                  ))}
+                </div>
+              ) : (
+                <div>{ASSISTENTI_FIELDS.map(({ key, label }) => <RoleRow key={key} label={label} value={r?.[key] as string} />)}</div>
+              )}
+            </div>
+
+            <div>
+              <p className={SECTION_LABEL}>Classificazioni</p>
+              {mode !== 'view' ? (
+                <div className="space-y-2">
+                  {CLASSIFICAZIONI_FIELDS.map(({ key, label }) => (
+                    <div key={key}><label className="text-xs text-gray-500 mb-1 block">{label}</label>{fieldAuto(key)}</div>
+                  ))}
+                </div>
+              ) : (
+                <div>{CLASSIFICAZIONI_FIELDS.map(({ key, label }) => <FieldRow key={key} label={label} value={r?.[key] as string} />)}</div>
+              )}
+            </div>
+
+            {type === 'struttura' && mode === 'view' && (
+              <div>
+                <p className={SECTION_LABEL + ' mb-3'}>Dipendenti ({strutturaDipendenti.length})</p>
+                {strutturaDipendenti.length === 0 ? (
+                  <p className="text-sm text-gray-400">Nessun dipendente assegnato</p>
+                ) : (
+                  <div className="space-y-1">
+                    {strutturaDipendenti.map((d) => (
+                      <div key={d.codice_fiscale} className="flex items-center justify-between py-1.5 border-b border-gray-50">
+                        <div>
+                          <span className="text-sm text-gray-900">{d.titolare ?? '—'}</span>
+                          <span className="text-xs text-gray-400 ml-2">{d.codice_fiscale.slice(0, 8)}…</span>
+                        </div>
+                        <div className="flex gap-1">
+                          {d.approvatore && <RoleBadge value={d.approvatore} />}
+                          {d.viaggiatore && <RoleBadge value={d.viaggiatore} />}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {deleteError && (
+              <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-md px-3 py-2">{deleteError}</div>
+            )}
+
+            {mode === 'view' && record && (
+              <div className="pt-2 flex flex-col gap-2">
+                <button
+                  onClick={() => setConfirmDelete(true)}
+                  className="flex items-center gap-1.5 text-sm text-red-500 hover:text-red-700 transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Elimina {type === 'struttura' ? 'struttura' : 'dipendente'}
+                </button>
+                {type === 'dipendente' && (r as unknown as Dipendente)?.deleted_at && (
+                  <button
+                    onClick={() => setConfirmHardDelete(true)}
+                    className="flex items-center gap-1.5 text-sm text-red-700 font-semibold hover:text-red-900 transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Elimina definitivamente
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {mode !== 'view' && (
+            <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-gray-100">
+              <button
+                onClick={() => record ? setMode('view') : onClose()}
+                className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-md transition-colors"
+              >
+                Annulla
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="px-4 py-1.5 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-50 transition-colors font-medium"
+              >
+                {saving ? 'Salvataggio…' : 'Salva'}
+              </button>
+            </div>
+          )}
+        </div>
+
+        <ConfirmDialog
+          open={confirmDelete}
+          title={`Elimina ${type === 'struttura' ? 'struttura' : 'dipendente'}`}
+          message={`Sei sicuro di voler eliminare "${title}"? L'operazione è reversibile.`}
+          confirmLabel="Elimina"
+          onConfirm={handleDelete}
+          onCancel={() => setConfirmDelete(false)}
+        />
+
+        <ConfirmDialog
+          open={confirmHardDelete}
+          title="Eliminazione definitiva"
+          message={`⚠️ ATTENZIONE: questa operazione è IRREVERSIBILE.\n\nIl dipendente "${title}" verrà cancellato definitivamente dal database e non potrà essere recuperato.`}
+          confirmLabel="Elimina definitivamente"
+          onConfirm={handleHardDelete}
+          onCancel={() => setConfirmHardDelete(false)}
+        />
+      </>
+    )
+  }
 
   return (
     <>
